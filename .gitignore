@@ -12,6 +12,8 @@ test_*
 
 # production
 /build
+/v0
+/v1
 
 # misc
 .DS_Store
