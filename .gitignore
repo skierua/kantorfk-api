@@ -14,6 +14,7 @@ test_*
 /build
 /v0
 /v1
+*.zip
 
 # misc
 .DS_Store
