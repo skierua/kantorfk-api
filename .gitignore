@@ -12,9 +12,14 @@ test_*
 
 # production
 /build
+
+# tmp
 /v0
 /v1
+/v2
 *.zip
+/flag
+/img
 
 # misc
 .DS_Store
