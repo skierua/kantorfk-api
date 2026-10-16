@@ -1,0 +1,70 @@
+# 1. Обробка та миттєве повернення CORS заголовків для PREFLIGHT (OPTIONS)
+<IfModule mod_headers.c>
+    # Налаштування заголовків для ВСІХ типів запитів
+    Header always set Access-Control-Allow-Origin "http://localhost:5173"
+    Header always set Access-Control-Allow-Credentials "true"
+    Header always set Access-Control-Allow-Methods "GET, POST, OPTIONS, PUT, DELETE"
+    Header always set Access-Control-Allow-Headers "content-type, authorization, x-api-key, x-requested-with"
+    Header always set Access-Control-Expose-Headers "authorization"
+
+    # Якщо це запит OPTIONS, сервер сам одразу повертає 204 No Content без запуску PHP
+    RewriteEngine On
+    RewriteCond %{REQUEST_METHOD} OPTIONS
+    RewriteRule ^(.*)$ - [R=204,L]
+</IfModule>
+
+# 2. Роутинг та захист від циклічних редиректів (Маршрутизація на index.php)
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /api/v5/
+
+    # Якщо запит вже йде на index.php, зупиняємо подальшу обробку правил (запобігає Infinite Loop)
+    RewriteRule ^index\.php$ - [L]
+
+    # Якщо файл фізично існує (наприклад, реальна картинка чи скрипт) — віддаємо його прямо
+    RewriteCond %{REQUEST_FILENAME} -f
+    RewriteRule ^ - [L]
+
+    # Усі інші запити безпечно перенаправляємо на єдину точку входу
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^(.*)$ index.php [QSA,L]
+</IfModule>
+
+
+
+# RewriteEngine On
+# RewriteBase /api/v5/
+
+# RewriteCond %{HTTP:Authorization} ^(.*)
+# RewriteRule .* - [e=HTTP_AUTHORIZATION:%1]
+
+# <IfModule mod_headers.c>
+#     # Якщо це preflight запит OPTIONS, сервер сам одразу віддасть CORS і пустить браузер далі
+#     RewriteEngine On
+#     RewriteBase /api/v5/
+    
+#     RewriteCond %{HTTP:Authorization} ^(.*)
+#     RewriteRule .* - [e=HTTP_AUTHORIZATION:%1]
+#     RewriteCond %{REQUEST_METHOD} OPTIONS
+#     RewriteRule ^(.*)$ - [env=API_OPTIONS:1]
+    
+#     Header set Access-Control-Allow-Origin "http://localhost:5173" env=API_OPTIONS
+#     Header set Access-Control-Allow-Methods "GET, POST, OPTIONS, PUT, DELETE" env=API_OPTIONS
+#     Header set Access-Control-Allow-Headers "Content-Type, Authorization, X-API-KEY, X-Requested-With" env=API_OPTIONS
+#     Header set Access-Control-Allow-Credentials "true" env=API_OPTIONS
+    
+#     # Повертаємо 204 клієнту силами сервера
+#     RewriteCond %{ENV:API_OPTIONS} 1
+#     RewriteRule ^(.*)$ - [R=204,L]
+# </IfModule>
+
+# # Якщо файл вже є index.php, нічого не робимо (запобігає циклу)
+# RewriteRule ^index\.php$ - [L]
+
+# # Якщо файл фізично існує (наприклад, якась картинка чи скрипт) — віддаємо його
+# RewriteCond %{REQUEST_FILENAME} -f
+# RewriteRule ^ - [L]
+
+# # Все інше безпечно перенаправляємо на index.php
+# RewriteCond %{REQUEST_FILENAME} !-d
+# RewriteRule ^(.*)$ index.php [QSA,L]
