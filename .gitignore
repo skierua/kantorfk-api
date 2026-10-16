@@ -25,7 +25,7 @@ test_*
 .DS_Store
 /v2/.env
 /v4/.env
-/v5/.env
+.env
 .env.local
 .env.development.local
 .env.test.local
