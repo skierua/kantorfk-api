@@ -1,5 +1,7 @@
 <?php
-header("Access-Control-Allow-Origin: {$_SERVER['HTTP_ORIGIN']}");
+// header("Access-Control-Allow-Origin: {$_SERVER['HTTP_ORIGIN']}");
+// header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+// header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
 require_once "./lib.php";
 // $endpoints = array();
 $endpoints_get = array();
@@ -8,6 +10,10 @@ $endpoints_post = array();
 const QUERY_BALANCE_SSE =  "select coalesce(id,'') as id, coalesce(chid,'UAH') as chid, shop, amnt, turndbt, turncdt, tm, acntno, '' as scancode, coalesce(vk_currency.sortorder,'0') cuso, coalesce(vk_shop.sortorder,'99') shso "
 ."from vk_acntst join vk_currency on(id=atclcode) left join vk_shop on(vk_acntst.shop=vk_shop.code) "
 ."where (abs(amnt)>0.0000001 or substr(now(),1,10)=substr(tm,1,10)) and (shop='CITY' or shop='FEYA' or shop='EKSV' or shop='BULK');";
+
+const QUERY_BALANCE_ALL =  "select coalesce(id,'') as id, coalesce(chid,'UAH') as chid, shop, amnt, turndbt, turncdt, tm, acntno, '' as scancode, coalesce(vk_currency.sortorder,'0') cuso, coalesce(vk_shop.sortorder,'99') shso "
+."from vk_acntst join vk_currency on(id=atclcode) left join vk_shop on(vk_acntst.shop=vk_shop.code) "
+."where (abs(amnt)>0.0000001 or substr(now(),1,10)=substr(tm,1,10));";
 
 const QUERY_OFFERS_SSE = "SELECT vk_offer_crnc.id as oid,  vk_currency.id as curid, chid, name, coalesce(vk_currency.qty,'1') qty, shop, bidask, amnt, price, tel, vk_offer_crnc.note as onote, tm, sortorder FROM vk_offer_crnc join vk_currency on(atclcode=chid) order by tm desc;";
 
@@ -185,7 +191,9 @@ $endpoints_post["accounts"] = function ($post): void {
         echo json_encode(sqlReq_cache(QUERY_BALANCE_SSE, true));
     } else if ($post->reqid == "sse") {      
         echo json_encode(sqlReq_cache(QUERY_BALANCE_SSE));
-    } else if ($post->reqid == "selkn") {      
+    } else if ($post->reqid == "selall") {      
+        echo json_encode(sqlReq_cache(QUERY_BALANCE_ALL));
+    } else if ($post->reqid == "selkn") {      // deprecated
         $vquery =  "select coalesce(id,'') as id, coalesce(chid,'UAH') as chid, shop, amnt, turndbt, turncdt, tm, acntno, '' as scancode, coalesce(vk_currency.sortorder,'0') cuso, coalesce(vk_shop.sortorder,'99') shso "
         ."from vk_acntst join vk_currency on(id=atclcode) left join vk_shop on(vk_acntst.shop=vk_shop.code) "
         ."where (abs(amnt)>0.0000001 or substr(now(),1,10)=substr(tm,1,10)) and (shop='CITY' or shop='FEYA' or shop='EKSV' or shop='BULK');";

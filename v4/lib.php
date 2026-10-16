@@ -16,6 +16,40 @@ require_once PROJECT_ROOT_PATH . "DotEnvLoader.php";
 $gl_lastQuery = "";
 $gl_payload = ""; // string not JSON !!!
 
+function getBearerToken() {
+    $headers = null;
+    
+    // 1. Намагаємось отримати через стандартну функцію (Apache)
+    if (function_exists('getallheaders')) {
+        $headers = getallheaders();
+        if (isset($headers['Authorization'])) {
+            $headers = $headers['Authorization'];
+        } elseif (isset($headers['authorization'])) { // деякі сервери лоуеркейсять
+            $headers = $headers['authorization'];
+        } else {
+            $headers = null;
+        }
+    } 
+    
+    // 2. Альтернатива через $_SERVER (Nginx або якщо Apache не передав заголовки)
+    if ($headers === null) {
+        if (isset($_SERVER['Authorization'])) {
+            $headers = trim($_SERVER["Authorization"]);
+        } elseif (isset($_SERVER['HTTP_AUTHORIZATION'])) { // Для Nginx/FastCGI
+            $headers = trim($_SERVER["HTTP_AUTHORIZATION"]);
+        }
+    }
+
+    // 3. Витягуємо саму строку токена з "Bearer {token}"
+    if (!empty($headers)) {
+        if (preg_match('/Bearer\s(\S+)/', $headers, $matches)) {
+            return $matches[1];
+        }
+    }
+    return "";
+   
+    // return null;
+}
 
 function parseToken($token){
     $ok = false;

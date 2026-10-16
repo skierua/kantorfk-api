@@ -1,22 +1,39 @@
-<Files "*.php">
-    Require ip 127.0.0.1
-</Files>
-
-<Files "index.php">
-    Require all granted
-</Files>
-
 RewriteEngine On
+
+# 1. Дозволяємо заголовок Authorization
+RewriteCond %{HTTP:Authorization} ^(.*)
+RewriteRule .* - [e=HTTP_AUTHORIZATION:%1]
+
+# 2. Налаштування роутингу
+RewriteBase /api/v4
+
+# Якщо файл існує (наприклад, test_auth.php), відкриваємо його
+RewriteCond %{REQUEST_FILENAME} -f
+RewriteRule ^ - [L]
+
+# Якщо файлу немає, шлемо все на index.php
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^(.+)$ index.php [QSA,L]
+
+#<Files "*.php">
+#    Require ip 127.0.0.1
+#</Files>
+
+#<Files "index.php">
+#    Require all granted
+3</Files>
+
+#RewriteEngine On
 #Remove the comments to force https, you must have an SSL certificate.
 #RewriteCond %{HTTPS} off
 #RewriteRule (.*) https://%{HTTP_HOST}%{REQUEST_URI} [R,L]
 
 #Enable HTTP Authorization Header if you use php-cgi 
 # $_SERVER["HTTP_AUTHORIZATION"]
-RewriteCond %{HTTP:Authorization} ^(.*)
-RewriteRule .* - [e=HTTP_AUTHORIZATION:%1]
+#RewriteCond %{HTTP:Authorization} ^(.*)
+#RewriteRule .* - [e=HTTP_AUTHORIZATION:%1]
 
-RewriteBase /api/v4
-RewriteCond %{REQUEST_FILENAME} !-d
-RewriteCond %{REQUEST_FILENAME} !-f
-RewriteRule ^(.+)$ index.php [QSA,L]
+#RewriteBase /api/v4
+#RewriteCond %{REQUEST_FILENAME} !-d
+#RewriteCond %{REQUEST_FILENAME} !-f
+#RewriteRule ^(.+)$ index.php [QSA,L]
