@@ -6,6 +6,7 @@ require_once "./lib.php";
 // $endpoints = array();
 $endpoints_get = array();
 $endpoints_post = array();
+$endpoints_delete = array();
 
 const QUERY_BALANCE_SSE =  "select coalesce(id,'') as id, coalesce(chid,'UAH') as chid, shop, amnt, turndbt, turncdt, tm, acntno, '' as scancode, coalesce(vk_currency.sortorder,'0') cuso, coalesce(vk_shop.sortorder,'99') shso "
 ."from vk_acntst join vk_currency on(id=atclcode) left join vk_shop on(vk_acntst.shop=vk_shop.code) "
@@ -27,13 +28,6 @@ const QUERY_RATES_SSE = "SELECT atclcode, vk_rate.qty as rqty, bid, ask, bidtm, 
 ."sortorder, pricecode as prc, cur.domestic FROM vk_rate join (SELECT id as atclcode, chid, name, symb, qty, sortorder, domestic, coalesce(scode,'') scode, coalesce(sname,'') sname "
 ."FROM `vk_currency` left join vk_cur_sub on id=atclcode) as cur USING(atclcode, scode) where sortorder!='' order by sortorder, scode;";
 
-// Помічник для екранування стрінгів (захист від SQL ін'єкцій)
-function sanitize($data) {
-    global $global_db_connection;
-
-    // $db = dbconnect();
-    return $global_db_connection ? $global_db_connection->real_escape_string(trim($data)) : trim($data);
-}
 
 // Помічник для стандартизації успішної відповіді під фронтенд
 function sendJsonResponse($data) {
@@ -87,46 +81,25 @@ $endpoints_post["404"] = function ($requestData): void {
     ));
 };
 
+$endpoints_delete["404"] = function ($requestData): void {
+    header($_SERVER['SERVER_PROTOCOL'] . ' 404 Not Found');
+    $endpoint = $requestData["endpointName"] ?? 'unknown';
+    echo json_encode(array(
+        'status' => 404, 
+        'str' => '404 not found', 
+        'note' => "Endpoint DELETE /$endpoint not found.", 
+        'rslt' => []
+    ));
+};
+
 // --- ЕНДПОІНТ: OFFERS ---
 $endpoints_get["offers"] = function ($requestData): void { 
     $reqid = sanitize($requestData["reqid"] ?? "EMPTY");
-    // $shop = sanitize($requestData["shop"] ?? "");
-    
-    // $flt = ($shop === "" ? "" : " WHERE shop='$shop'");
-    
-    // Запис логу відладки через безпечні параметри
-    // sqlReq("REPLACE INTO vk_dbg_func (id, tm, note) VALUES ('" . API_VERSION . "/offers/$reqid', '" . date("Y-m-d H:i:s") . "', '') ;");
     if ($reqid === "sel"){
         echo json_encode(sqlExec(QUERY_OFFERS_SEL));
         return;
-    } else if ($reqid === "sse") {
-        echo json_encode(sqlReq_cache(QUERY_OFFERS_SSE));
-        return;
     } else {
         badRequestId($reqid, "offers");
-    }
-};
-
-// --- ЕНДПОІНТ: ARCHIVE ---
-$endpoints_get["archive"] = function ($requestData) {   // DEPRECATED: use reports instead
-    $reqid = sanitize($requestData["reqid"] ?? "EMPTY");
-    $cur = sanitize($requestData["cur"] ?? "840");
-    $period = sanitize($requestData["period"] ?? date("Y-m-d"));
-    $rateCode = sanitize($requestData["code"] ?? DFLT_TRADE_ACNT ?? "3500");
-    
-    if ($reqid === "ratesAvrg") {
-        $start = date("Y-m-d", strtotime("-1 month 1 day", strtotime($period)));
-        $finish = date("Y-m-d", strtotime("+1 day", strtotime($period)));
-        
-        // Fix: Removed the extra single quote after $cur
-        $vquery = "SELECT period, atclcode, ba, qty, amnt, eq, shop, acnt, cashier, minrate, maxrate FROM vk_daycurslt "
-        . "WHERE (shop='CITY' OR shop='FEYA') AND atclcode='$cur' AND acnt = '$rateCode' AND period > '$start' AND period < '$finish';";
-        
-        echo json_encode(sqlReq_cache($vquery, 3600));
-        return;
-   } else {
-        badRequestId($reqid, "archive");
-        return;
     }
 };
 
@@ -138,13 +111,33 @@ $endpoints_get["reports"] = function ($requestData) {
     if ($reqid === "dayCurRslt") {
         $start = date("Y-m-d", strtotime("-1 month 1 day", strtotime($period)));
         $finish = date("Y-m-d", strtotime("+1 day", strtotime($period)));
-        $param = [ $rateCode, $start, $finish];
-        // $param = [$cur, $rateCode, $start, $finish];
         
-        // Fix: Removed the extra single quote after $cur
-        $vquery = "SELECT period, atclcode, ba, qty, amnt, eq, shop, acnt, cashier, minrate, maxrate FROM vk_daycurslt "
-        . "WHERE (shop='CITY' OR shop='FEYA') AND acnt = ? AND period > ? AND period < ?;";
-        // . "WHERE (shop='CITY' OR shop='FEYA') AND atclcode= ? AND acnt = ? AND period > ? AND period < ?;";
+        $shops = (isset($_GET['shop']) && is_array($_GET['shop'])) ? $_GET['shop'] : [];
+        $shopParams = array_map('sanitize', $shops);
+        
+        $condArray = [];
+        $param = []; 
+
+        if (count($shopParams) !== 0) {
+            $placeholders = implode(', ', array_fill(0, count($shopParams), '?'));
+            $condArray[] = "shop IN ($placeholders)";
+            
+            $param = array_merge($param, $shopParams);
+        }
+        $condArray[] = "acnt = ?";
+        $param[] = $rateCode;
+
+        $condArray[] = "period > ?";
+        $param[] = $start;
+
+        $condArray[] = "period < ?";
+        $param[] = $finish;
+ 
+        $where_str = implode(" AND ", $condArray);
+       
+        $vquery = "SELECT period, atclcode, ba, qty, amnt, eq, shop, acnt, cashier, minrate, maxrate 
+                    FROM vk_daycurslt 
+                    WHERE $where_str ;";
         
         echo json_encode(sqlExec($vquery, 3600, $param));
         return;
@@ -166,6 +159,7 @@ $endpoints_get["currencies"] = function ($requestData): void {
         $vquery = "SELECT atclcode, scode as id, sname FROM vk_cur_sub ORDER BY scode;";
     } else {
         badRequestId($reqid, "currencies");
+        return;
     }
     
     echo json_encode(sqlExec($vquery, 3600));
@@ -177,11 +171,7 @@ $endpoints_get["rates"] = function ($requestData): void {
     $shop = sanitize($requestData["shop"] ?? "");
     $pricecode = sanitize($requestData["pricecode"] ?? "");
 
-    // Логування виклику
-    // sqlReq("REPLACE INTO vk_dbg_func (id, tm, note) VALUES ('" . API_VERSION . "/rates/$reqid', '" . date("Y-m-d H:i:s") . "', '') ;");
-
     if ($reqid === "sel") { 
-         // ЗАХИСТ: Екрануємо параметри, щоб уникнути хакерських ін'єкцій через POST
         $param = [];
         $where_clauses = [];
         
@@ -201,10 +191,7 @@ $endpoints_get["rates"] = function ($requestData): void {
         $vquery = QUERY_RATES_SEL." WHERE $where_str ;";
         
         echo json_encode(sqlExec($vquery, 0, $param));
-    //    echo json_encode(sqlReq($vquery));
         return;
-    } elseif ($reqid === "sse") { 
-        echo json_encode(sqlReq_cache(QUERY_RATES_SSE));
     } else {
         badRequestId($reqid, "rates");
     }
@@ -222,17 +209,19 @@ $endpoints_post["app_api"] = function ($post): void {
         $post_shop = sanitize($post->shop ?? "");
         $delPrevious = sanitize($post->del ?? 0);
         if ($delPrevious) {
-            $vquery = "delete from vk_acntst where shop='$post_shop'";
-            $res = sqlReq($vquery);
+            $shop_param = [$post_shop];
+            $vquery = "delete from vk_acntst where shop = ? ;";
+            $res = sqlExec($vquery, 0, $shop_param);
             if ($res['status'] === 0) {
                 sqlCache_clear(QUERY_BALANCE_SSE);
                 sqlCache_clear(QUERY_BALANCE_ALL);
             }
         }
-
-        $val = "";
         $vquery = "REPLACE INTO vk_acntst (acntno, atclcode, amnt, turndbt, turncdt, shop, tm) VALUES ";
-        
+
+        $rows_placeholders = []; // Масив для груп знаків питань (?, ?, ...)
+        $params = [];            // Плоский масив для всіх значень під заміну
+
         foreach ($post->data as $row) {
             $s_acntno = sanitize($row->acntno ?? "");
             $s_artid  = sanitize($row->articleid ?? "");
@@ -241,11 +230,14 @@ $endpoints_post["app_api"] = function ($post): void {
             $s_tcdt   = sanitize($row->turncdt ?? "0");
             $s_tm     = sanitize($row->tm ?? gmdate("Y-m-d\TH:i:s\Z"));
 
-            $val .= ($val !== "" ? "," : "") . "('$s_acntno', '$s_artid', '$s_amnt', '$s_tdbt', '$s_tcdt', '$post_shop', '$s_tm')";
+            $rows_placeholders[] = "(?, ?, ?, ?, ?, ?, ?)";
+
+            array_push($params, $s_acntno, $s_artid, $s_amnt, $s_tdbt, $s_tcdt, $post_shop, $s_tm);
         }
-        
-        $vquery .= $val . ";";
-        $res = sqlReq($vquery);
+
+        $vquery .= implode(', ', $rows_placeholders) . ";";
+
+        $res = sqlExec($vquery, 0, $params);
 
         if ($res['status'] === 0) {
             sqlCache_clear(QUERY_BALANCE_SSE);
@@ -253,6 +245,7 @@ $endpoints_post["app_api"] = function ($post): void {
         }
 
         echo json_encode($res);
+        return;
 
     } else if ($reqid === "upddcm") {   
         if (function_exists('sqlAddBind')) {
@@ -287,25 +280,9 @@ $endpoints_post["app_api"] = function ($post): void {
         $vquery = QUERY_RATES_SEL." WHERE $where_str ;";
         
         echo json_encode(sqlExec($vquery, 0, $param));
-    //    echo json_encode(sqlReq($vquery));
         return;
     } else {
         badRequestId($reqid, "app_api");
-    }
-};
-
-$endpoints_post["accounts"] = function ($post): void { 
-    global $global_payload; // ОТРИМУЄМО ПАЙЛОАД JWT ТОКЕНА З РОУТЕРА
-    $vquery = "";
-    
-    // Безпечне читання та очищення базових параметрів
-    $reqid = sanitize($post->reqid ?? "");
-    $shop_post = sanitize($post->shop ?? "");
-
-    if ($reqid === "sse") {      
-        echo json_encode(sqlReq_cache(QUERY_BALANCE_SSE));
-    } else {
-        badRequestId($reqid, "accounts");
     }
 };
 
@@ -475,6 +452,81 @@ $endpoints_post["dcms"] = function ($post): void {
     }
 };
 
+$endpoints_post["_dcms"] = function ($post): void { 
+    $vquery = "";
+    
+    // Безпечне очищення базових параметрів
+    $reqid = sanitize($post->reqid ?? "");
+
+    if ($reqid === "sel") {
+        $flt = "";
+        
+        if (isset($post->acnt)) { 
+            $acnt = sanitize($post->acnt);
+            $flt .= ($flt === "") ? " (cdt = '$acnt' or vk_dcm.dbt = '$acnt')" : " and (cdt = '$acnt' or vk_dcm.dbt = '$acnt')"; 
+        }
+        if (isset($post->cur)) { 
+            $cur = sanitize($post->cur);
+            $flt .= ($flt === "") ? " atclcode = '$cur'" : " and atclcode = '$cur'"; 
+        }
+        if (isset($post->shop)) { 
+            $shop = sanitize($post->shop);
+            $flt .= ($flt === "") ? " shop = '$shop'" : " and shop = '$shop'"; 
+        }
+        if (isset($post->from)) { 
+            $from = sanitize($post->from);
+            $flt .= ($flt === "") ? " tm >= '$from'" : " and tm >= '$from'"; 
+        }
+        if (isset($post->to)) { 
+            $to = sanitize($post->to);
+            $flt .= ($flt === "") ? " DATE(tm) <= '$to'" : " and DATE(tm) <= '$to'"; 
+        }
+        
+        if ($flt !== "") { 
+            $flt = " where $flt"; 
+        } 
+
+        $pagination = "";
+        if (isset($post->offset) || isset($post->limit)) { 
+            $limit_val = isset($post->limit) ? (int)$post->limit : 50; // дефолтний ліміт 50 записів
+            $offset_val = isset($post->offset) ? (int)$post->offset : 0;
+            
+            $pagination = " LIMIT $limit_val OFFSET $offset_val";
+        }
+
+        $vquery = "SELECT vk_dcmbind.dcmcode as bcode, vk_dcmbind.dbt as bacnt, vk_dcmbind.amnt as bamnt, vk_dcmbind.eq as beq, vk_dcmbind.dsc as bdsc, vk_dcmbind.bns as bbns,"
+        ." clientid, tm, shop, cshr, vk_dcm.id, pid, vk_dcm.dcmcode as dcmcode, vk_dcm.amnt as amnt, vk_dcm.eq as eq, vk_dcm.dsc as dsc, vk_dcm.bns as bns, vk_dcm.note as note,"
+        ." vk_dcm.atclcode as atclcode, vk_dcm.dbt, cdt from vk_dcmbind join vk_dcm on (vk_dcmbind.id=pid) $flt order by tm desc, pid desc $pagination;";
+        
+        echo json_encode(sqlReq($vquery));
+
+    } else {
+        badRequestId($reqid, "dcms");
+    }
+};
+
+$endpoints_delete["offers"] = function ($path) use (&$endpoints_delete): void { 
+    
+    // Безпечно розбиваємо шлях. Якщо '/' немає, другого елементу просто не буде в масиві
+    $parts = explode('/', $path);
+    $endpoint = $parts[0] ?? '';
+    $rawid = $parts[1] ?? null;
+
+    if ($rawid === null || $rawid === '') {
+        // Виправляємо назву змінної на $endpoint, яка існує вище
+        $endpoints_delete["404"](array("endpointName" => "path=$path rawid = $rawid"));
+        exit();
+    }
+    
+    $offerid = sanitize($rawid);
+    $param = [$offerid];
+    
+    $vquery = "DELETE FROM vk_offer_crnc WHERE id = ? ;";
+    
+    // header("Content-Type: application/json; charset=UTF-8");
+    echo json_encode(sqlExec($vquery, 0, $param));
+};
+
 $endpoints_post["offers"] = function ($post): void { 
     $vquery = "";
     
@@ -492,22 +544,21 @@ $endpoints_post["offers"] = function ($post): void {
         
         // Для часу використовуємо поточний ISO рядок, якщо з фронтенду прийшло порожнє поле
         $tm    = sanitize(!empty($post->tm) ? $post->tm : date('Y-m-d H:i:s'));
+        $where_clauses = [];
 
-        if ($ofid !== "" && ($amnt === "" || $price === "")) {   
-            // Видалення (якщо прислали ID, але сума або курс порожні)
-            $vquery = "DELETE FROM vk_offer_crnc WHERE id = '$ofid' ";
-            
-        } else if ($ofid !== "") {        
+        $param = [$shop, $cur, $ba, $amnt, $price, $tel, $note, $tm];
+        if ($ofid !== "") {        
             // Оновлення існуючої пропозиції
-            $vquery = "UPDATE vk_offer_crnc SET shop='$shop', atclcode='$cur', bidask='$ba', amnt='$amnt', price='$price', tel='$tel', note='$note', tm='$tm' WHERE id = '$ofid' ";
+            $param[] = $ofid;
+            $vquery = "UPDATE vk_offer_crnc SET shop = ?, atclcode = ?, bidask = ?, amnt = ?, price = ?, tel = ?, note = ?, tm = ? WHERE id = ? ";
             
         } else {        
             // Створення нової пропозиції (якщо ofid порожній)
-            $vquery = "INSERT INTO vk_offer_crnc (shop, atclcode, bidask, amnt, price, tel, note, tm) VALUES ('$shop', '$cur', '$ba', '$amnt', '$price', '$tel', '$note', '$tm')";
+            $vquery = "INSERT INTO vk_offer_crnc (shop, atclcode, bidask, amnt, price, tel, note, tm) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
         }
 
         // Виконуємо безпечний SQL-запит
-        $res = sqlReq($vquery);
+        $res = sqlExec($vquery, 0, $param);
 
         if ($res['status'] === 0 && function_exists('sqlCache_clear')) {
             sqlCache_clear(QUERY_OFFERS_SEL);
@@ -528,46 +579,16 @@ $endpoints_post["offers"] = function ($post): void {
 $endpoints_post["rates"] = function ($post): void {
     $vquery = "";
     
-    // Безпечне читання та очищення базових параметрів запиту
     $reqid = sanitize($post->reqid ?? "");
 
-    // if ($reqid === "sel") {
-    //     // ЗАХИСТ: Екрануємо параметри, щоб уникнути хакерських ін'єкцій через POST
-    //     $shop = sanitize($post->shop ?? "");
-    //     $pricecode = sanitize($post->pricecode ?? "");
-        
-    //     $flt = "";
-    //     if ($shop !== "") { 
-    //         $flt .= ($flt === "") ? " shop = '$shop'" : " and shop = '$shop'"; 
-    //     }
-    //     if ($pricecode !== "") { 
-    //         $flt .= ($flt === "") ? " pricecode = '$pricecode'" : " and pricecode = '$pricecode'"; 
-    //     }
-        
-    //     if ($flt !== "") { 
-    //         $flt = " and $flt"; 
-    //     } 
-        
-    //     $vquery = "SELECT atclcode, vk_rate.qty as rqty, bid, ask, bidtm, asktm, shop, chid, name, case vk_currency.qty when '' then 1 else vk_currency.qty end as cqty, "
-    //     ."sortorder, pricecode as prc FROM vk_rate join vk_currency on (atclcode=id) where sortorder!='' $flt order by sortorder;";
-        
-    //     echo json_encode(sqlReq($vquery));
-
-    // } else if ($reqid === "ssedb") {      
-    //     echo json_encode(sqlReq_cache(QUERY_RATES_SSE, 0));
-    // } else if ($reqid === "sse_old") {      
-    //     echo json_encode(sqlReq_cache(QUERY_RATES_SSE_OLD));
-    // } else if ($reqid === "sse") { 
-    //     echo json_encode(sqlReq_cache(QUERY_RATES_SSE));
-    // } else 
     if ($reqid === "upd") {      
-        if (!isset($post->rates) || !is_array($post->rates)) {
+        if (!isset($post->rate)) {
             echo json_encode(['status' => 1, 'str' => 'Rates data is missing', 'rslt' => []]);
             return;
         }
 
         // Виконуємо функцію оновлення курсів у базі даних
-        $res = sqlUpdRate($post->rates);
+        $res = sqlUpdRate($post->rate);
 
         if ($res['status'] === 0 && function_exists('sqlCache_clear')) {
             sqlCache_clear(QUERY_RATES_SSE);
@@ -583,56 +604,58 @@ $endpoints_post["rates"] = function ($post): void {
 $endpoints_post["reports"] = function ($post): void {
     global $global_payload;
     
-    $vquery = "";
-    $vfilter = "1";
-    
     // Чисті та безпечні параметри з токена
     $kant = sanitize($global_payload->term ?? "");
     $userRole = sanitize($global_payload->role ?? "kant");
 
     // Безпечне чищення вхідних POST параметрів
     $reqid = sanitize($post->reqid ?? "");
-    $post_code = sanitize($post->code ?? "");
-    $post_shop = sanitize($post->shop ?? "");
-    $post_from = sanitize($post->from ?? "");
-    $post_to   = sanitize($post->to ?? "");
 
     if ($reqid === "updprofit") { // DEPRECATED: use app_api endpoint instead
         $res = sqlUpdMonRepo($post, "profit");
 
         echo json_encode($res);
         return;
-    } else if ($reqid === "acnt") { // Звіт по залишках рахунків DEPRECATED: use accounts endpoint instead
-        $vacnt = ($post_code !== "") ? $post_code : "3000";
-        
-        if ($vacnt !== "3003" && (substr($vacnt, 0, 2) !== "35")) {
-            if ($userRole !== "owner") { 
-                $vfilter = "code='$kant'"; 
-            }
-        }
-        
-        $vacntLen = strlen($vacnt);
-        if (substr($vacnt, 0, 2) === "30") {
-            $vquery = "select coalesce(id,'') as id, coalesce(chid,'UAH') as chid, shop, amnt as total, turndbt as income, turncdt as outcome, tm, acntno "
-            ."from vk_acntst left join vk_currency on(id=atclcode) join vk_shop on(vk_acntst.shop=vk_shop.code) "
-            ."where substr(acntno,1,$vacntLen)='$vacnt' and permit and (abs(amnt)>0.0000001 or substr(now(),1,10)=substr(tm,1,10)) and $vfilter order by coalesce(vk_currency.sortorder,0),vk_shop.sortorder,substr(acntno,1,4),tm desc;";
-        } else {
-            $vquery = "select coalesce(id,'') as id, coalesce(chid,'UAH') as chid, shop, 0-amnt as total, turndbt as outcome, turncdt as income, tm, acntno "
-            ."from vk_acntst left join vk_currency on(id=atclcode) join vk_shop on(vk_acntst.shop=vk_shop.code) "
-            ."where substr(acntno,1,$vacntLen)='$vacnt' and permit and (abs(amnt)>0.0000001 or substr(now(),1,10)=substr(tm,1,10)) and $vfilter order by coalesce(vk_currency.sortorder,0),vk_shop.sortorder,substr(acntno,1,4),tm desc;";
-        }
-     } else if ($reqid === "crntTradeOper") { // Обороти по торгівлі (curent trade operations)
+    }
+      else if ($reqid === "crntTradeOper") { // Обороти по торгівлі (curent trade operations)
         $post_tm = sanitize($post->tm ?? date('Y-m-d'));
-        // $tmLen = strlen($post_tm);
-        $param = [$post_tm];
-        $vquery = "SELECT SUBSTRING(tm, 1,10) AS period, vk_dcm.atclcode, vk_dcm.dcmcode, shop, SUM(vk_dcm.amnt) AS amnt, ROUND(SUM(vk_dcm.eq), 2) AS eq "
-        ." FROM vk_dcmbind join vk_dcm on (vk_dcmbind.id=pid) "
-        ." WHERE (shop='CITY' OR shop='FEYA') AND LENGTH(vk_dcm.atclcode) = 3 AND (vk_dcm.dcmcode = 'trade:buy' OR vk_dcm.dcmcode = 'trade:sell') AND SUBSTRING(tm, 1,10) = ? "
-        ." GROUP BY SUBSTRING(tm, 1,10), vk_dcm.atclcode, vk_dcm.dcmcode, shop ;";
-        // echo json_encode(sqlReq_cache($vquery, 900));
+        $shops = (isset($post->shop) && is_array($post->shop)) ? $post->shop : [];
+        
+        $shopParams = array_map('sanitize', $shops);
+        
+        $condArray = [];
+        $param = []; 
+
+        if (count($shopParams) !== 0) {
+            $placeholders = implode(', ', array_fill(0, count($shopParams), '?'));
+            $condArray[] = "shop IN ($placeholders)";
+            
+            $param = array_merge($param, $shopParams);
+        }
+
+        $condArray[] = "LENGTH(vk_dcm.atclcode) = 3";
+        $condArray[] = "(vk_dcm.dcmcode = 'trade:buy' OR vk_dcm.dcmcode = 'trade:sell')";
+        
+        $condArray[] = "SUBSTRING(tm, 1, 10) = ?";
+        $param[] = $post_tm;
+
+        $where_str = implode(" AND ", $condArray);
+
+        $vquery = "SELECT 
+                        SUBSTRING(tm, 1, 10) AS period, 
+                        vk_dcm.atclcode, 
+                        vk_dcm.dcmcode, 
+                        shop, 
+                        SUM(vk_dcm.amnt) AS amnt, 
+                        ROUND(SUM(vk_dcm.eq), 2) AS eq 
+                FROM vk_dcmbind 
+                JOIN vk_dcm ON (vk_dcmbind.id = pid) 
+                WHERE $where_str
+                GROUP BY SUBSTRING(tm, 1, 10), vk_dcm.atclcode, vk_dcm.dcmcode, shop;";
+
         echo json_encode(sqlExec($vquery, 900, $param));
         return;
-     } else if ($reqid === "moncurprofit") { 
+    } else if ($reqid === "moncurprofit") { 
         $post_shop = sanitize($post->shop ?? "");
         // 1. Формуємо дати (Рекомендується 'Y-m-d', наприклад '2026-09-01')
         // Якщо в базі суворо тип VARCHAR або DATE, краще підігнати під формат бази
@@ -665,61 +688,17 @@ $endpoints_post["reports"] = function ($post): void {
 
         echo json_encode(sqlExec($vquery, 900, $param));
         return;
-    // } else if ($reqid === "kntprofit") { // Дохід по касах
-    //     $vfilter = ($post_shop !== "") ? "and shop='$post_shop'" : "";
-        
-    //     $vquery = "SELECT acnt as gr0, shop as gr1, chid as code, period, CONCAT('/',acnt,'/',vk_shop.sortorder,'/',coalesce(vk_currency.sortorder,'99')) as so, amnt "
-    //     ."FROM vk_mnrslt2 join vk_shop on (vk_mnrslt2.shop=vk_shop.code) join vk_currency on(vk_mnrslt2.atclcode=vk_currency.id) "
-    //     ."WHERE period >= '$post_from' and period <= '$post_to' and vk_mnrslt2.code = 'profit' $vfilter order by so;";
-        
-    // } else if ($reqid === "curprofit") { // Дохід по валютах
-    //     $vfilter = ($post_shop !== "") ? "and shop='$post_shop'" : "";
-        
-    //     $vquery = "SELECT acnt as gr0, chid as gr1, shop as code, period, CONCAT('/',acnt,'/',coalesce(vk_currency.sortorder,'99'),'/',vk_shop.sortorder) as so, amnt "
-    //     ."FROM vk_mnrslt2 join vk_shop on (vk_mnrslt2.shop=vk_shop.code) join vk_currency on(vk_mnrslt2.atclcode=vk_currency.id) "
-    //     ."WHERE period >= '$post_from' and period <= '$post_to' and vk_mnrslt2.code = 'profit' $vfilter order by so;";
-        
-    // } else if ($reqid === "cshprofit") { // Дохід по касирах
-    //     $vfilter = ($post_shop !== "") ? "and shop='$post_shop'" : "";
-        
-    //     $vquery = "SELECT cashier as gr0, chid as gr1, shop as code, period, CONCAT('/',cashier,'/',coalesce(vk_currency.sortorder,'99'),'/',vk_shop.sortorder) as so, amnt "
-    //     ."FROM vk_mnrslt2 join vk_shop on (vk_mnrslt2.shop=vk_shop.code) join vk_currency on(vk_mnrslt2.atclcode=vk_currency.id) "
-    //     ."WHERE period >= '$post_from' and period <= '$post_to' and vk_mnrslt2.code = 'profit' and acnt='3500' $vfilter order by so;";
-        
-    // } else if ($reqid === "chartprofit") { // Аналітика та зарплати під графіки
-    //     $vquery = "SELECT acnt, shop, cashier, chid, period, vk_mnrslt2.amnt total, vk_wage.amnt wage, vk_currency.sortorder cso, vk_shop.sortorder sso "
-    //     ." FROM vk_mnrslt2 left join vk_wage using(period,cashier) join vk_shop on (vk_mnrslt2.shop=vk_shop.code) join vk_currency on(vk_mnrslt2.atclcode=vk_currency.id) "
-    //     ." WHERE period >= '$post_from' and period <= '$post_to' and vk_mnrslt2.code = 'profit' and cashier!=''  and acnt='3500';";
-    } else {
+    }
+     else {
         badRequestId($reqid, "reports");
     }
-    
-    // Напряму повертаємо результат оптимізованої функції sqlReq
-    echo json_encode(sqlReq($vquery));
 };
 
 $endpoints_post["publish_tg"] = function ($post): void {
     echo json_encode( sendTelegramMessage($post->message));
 };
 
-/**
- * checks if the token is valid, and prevents the execution of 
- * the requested endpoint.
- * @param array $requestData contains the parameters sent in the request, 
- *                           for this endpoint is required an item with 
- *                           key "token" that contains the token
- *                           received to authenticate and authorize 
- *                           the request.
- * @return void
- */
 $endpoints_post["checktoken"] = function ($requestData): void {
-
-    //you can create secure tokens with this line, but that is a discussion for another post.. 
-    //but i am using UUIDv4 instead.
-    //$token = str_replace("=", "", base64_encode(random_bytes(160 / 8)));
-
-    //authorized tokens
-    // $tokens = array( "fa3b2c9c-a96d-48a8-82ad-0cb775dd3e5d" => "" );
 
     if (!isset($requestData["api_token"])) {
         echo json_encode("No token was received to authorize the operation. Verify the information sent");
@@ -738,13 +717,6 @@ $endpoints_post["checktoken"] = function ($requestData): void {
         header($_SERVER['SERVER_PROTOCOL'] . ' 401 Unauthorized');
         // return array('status'=>2, 'str' => '401 Unauthorized', 'note'=>json_decode($payload), 'rslt'=>$rslt);
     }
-    
-    // if (!isset($tokens[$requestData["api_token"]])) {
-    //     echo json_encode("The token  " . $requestData["api_token"] . 
-    //     " does not exists or is not authorized to perform this operation.");
-        
-    //     exit;
-    // }
 };
 
 

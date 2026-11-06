@@ -34,6 +34,13 @@ function dbconnect(){
     // $db1->set_charset("utf8");
     // return $db1;
 }
+// Помічник для екранування стрінгів (захист від SQL ін'єкцій)
+function sanitize($data) {
+    global $global_db_connection;
+
+    // $db = dbconnect();
+    return $global_db_connection ? $global_db_connection->real_escape_string(trim($data)) : trim($data);
+}
 
 /**
  * Скидає кеш Memcached для конкретного SQL-запиту
@@ -341,6 +348,7 @@ function sqlAddBind($jsobj, $shopFromPost = '') {
 
 function sqlUpdMonRepo($jsobj, $repoid) {
     global $global_db_connection;
+    $ok = true;
     $resp = [];
 
     if ($global_db_connection === null) {
@@ -359,46 +367,66 @@ function sqlUpdMonRepo($jsobj, $repoid) {
     }
     
     $db = $global_db_connection;
+        // $db->rollback();
+        header($_SERVER['SERVER_PROTOCOL'] . ' 500 Internal Server Error');
+        return ['status' => 2, 'str' => 'Repost update error', 'note' => $respnote, 'rslt' => []];
     
     // Вмикаємо фінансову транзакцію для безпеки пакетного оновлення
     $db->begin_transaction();
 
     $respnote = "";
 
-    $s_shop      = $db->real_escape_string($jsobj->shop ?? "");
-    $s_period    = $db->real_escape_string($jsobj->period ?? "");
+    $s_repo      = sanitize($repoid ?? "");
+    $s_shop      = sanitize($jsobj->shop ?? "");
+    $s_period    = sanitize($jsobj->period ?? "");
 
-    $sql = "delete from vk_mnrslt2 where period='".$s_period."' and shop='".$s_shop."' and code='".$repoid."';";
-    $db->query($sql);
+    $where_param = [$s_repo, $s_period, $s_shop];
+    $where_clause = "WHERE code = ? AND period = ? AND shop= ? ";
+    $del_sql = "DELETE from vk_mnrslt2 $where_clause;";
+    try {
+        $rslt = $db->execute_query($del_sql, $where_param);
+    } catch (\mysqli_sql_exception $e) {
+        $respnote .= $e->getMessage()."\n";
+        $ok &= false;
+    }
 
-    $vqval = "";
     $rows_list = $jsobj->data ?? $jsobj['data'] ?? [];
+    $ins_sql = "";
+    $ins_param = [];
+    $ins_val = [];
 
     foreach ($rows_list as $row) { 
-        $s_atclcode  = $db->real_escape_string($row->itemid ?? "");
-        $s_acnt = $db->real_escape_string($row->acnt ?? "");
-        $s_cshr = $db->real_escape_string($row->cshr ?? "");
-        $n_amnt   = (float)($row->amnt ?? 0);
-    
-        $vqval .= ($vqval !== "" ? "," : "") 
-                . " ('$s_period', '$s_atclcode',  $n_amnt, '$s_shop','$repoid', '$s_acnt', '$s_cshr')";
+        $s_atclcode  = sanitize($row->itemid ?? "");
+        $s_acnt = sanitize($row->acnt ?? "");
+        $s_cshr = sanitize($row->cshr ?? "");
+        $n_amnt   = (double)($row->amnt ?? 0);
 
+        $ins_val = array_merge($ins_val, [$s_period, $s_atclcode, $n_amnt, $s_shop, $s_repo, $s_acnt, $s_cshr]);
+        $ins_param[] = "( ? , ? , ? , ? , ? , ? , ? )";
     }
-    if ($vqval !== "") {
-        $sql = "INSERT INTO vk_mnrslt2 (period, atclcode, amnt, shop, code, acnt, cashier) VALUES $vqval ;";
-        if (!$db->query($sql)) {
-            $db->rollback(); // Скасовуємо все, якщо дочірні рядки не вставилися
-            header($_SERVER['SERVER_PROTOCOL'] . ' 500 Internal Server Error');
-            return ['status' => (int)$db->errno, 'str' => $db->error, 'note' => $sql, 'rslt' => $resp];
+    if (count($ins_param) > 0) {
+        $ins_sql = "INSERT INTO vk_mnrslt2 (period, atclcode, amnt, shop, code, acnt, cashier) 
+                    VALUES ". implode(', ', $ins_param).";";
+        try {
+            $rslt = $db->execute_query($ins_sql, $ins_val);
+        } catch (\mysqli_sql_exception $e) {
+            $respnote .= $e->getMessage()."\n";
+            $ok &= false;
         }
     }
-
-        // Якщо обидва запити пройшли успішно — фіксуємо транзакцію в базі
-    $db->commit();
-    return ['status' => 0, 'str' => '', 'note' => '', 'rslt' => []];
+    if ($ok) {
+        // Фіксуємо зміни в базі тільки якщо ВСІ курси з масиву оновилися без помилок
+        $db->commit();
+        return ['status' => 0, 'str' => '', 'note' => '', 'rslt' => []];
+    } else {
+        // Якщо хоча б один запит зламався — повністю скасовуємо весь пакет, захищаючи логіку даних
+        $db->rollback();
+        header($_SERVER['SERVER_PROTOCOL'] . ' 500 Internal Server Error');
+        return ['status' => 2, 'str' => 'Repost update error', 'note' => $respnote, 'rslt' => []];
+    }
 }
 
-function sqlUpdRate($jsobj) {
+function sqlUpdRate($rate) {
     global $global_db_connection;
     $resp = [];
 
@@ -419,77 +447,117 @@ function sqlUpdRate($jsobj) {
     
     $db = $global_db_connection;
     
-    // Вмикаємо фінансову транзакцію для безпеки пакетного оновлення
     $db->begin_transaction();
 
     $ok = true;
     $respnote = "";
 
-    foreach ($jsobj as $rate) {
-        $s_shop      = $db->real_escape_string($rate->shop ?? "");
-        $s_atclcode  = $db->real_escape_string($rate->atclcode ?? "");
-        $s_scode     = $db->real_escape_string($rate->scode ?? "");
-        $s_pricecode = $db->real_escape_string($rate->pricecode ?? "");
+    $s_atclcode  = $rate->atclcode ?? "";
+    $s_scode     = $rate->scode ?? "";
+    $s_pricecode = $rate->pricecode ?? "";
 
-        $whereclause = "WHERE shop='$s_shop' and atclcode='$s_atclcode' and scode='$s_scode' and pricecode='$s_pricecode'";
+    $shops = (isset($rate->shop) && is_array($rate->shop)) ? $rate->shop : [];
+    $shopParams = array_map('sanitize', $shops);
+    $condArray = [];
+    $cond_param = []; 
 
-        // Захищаємо числові значення від збоїв (замінюємо кому на крапку, якщо касир помилився)
-        $bid_val = str_replace(',', '.', $rate->bid ?? '0');
-        $ask_val = str_replace(',', '.', $rate->ask ?? '0');
+    $condArray[] = "atclcode = ? AND scode = ? AND pricecode = ?";
+    $cond_param = [$s_atclcode, $s_scode, $s_pricecode];
+
+    if (count($shopParams) !== 0) {
+        $placeholders = implode(', ', array_fill(0, count($shopParams), '?'));
+        $condArray[] = "shop IN ($placeholders)";
         
-        $f_bid = floatval($bid_val);
-        $f_ask = floatval($ask_val);
+        $cond_param = array_merge($cond_param, $shopParams);
+    }
 
-        if ($f_bid === 0.0 && $f_ask === 0.0) {
-            $delsql = "DELETE FROM vk_rate $whereclause;";
-            $db->query($delsql);
-            continue;
+    $where_clause = "WHERE  ".implode(" AND ", $condArray);
+
+    // Захищаємо числові значення від збоїв (замінюємо кому на крапку, якщо касир помилився)
+    $bid_val = str_replace(',', '.', $rate->bid ?? '0');
+    $ask_val = str_replace(',', '.', $rate->ask ?? '0');
+    $bid_num = (double)$bid_val;
+    $ask_num = (double)$ask_val;
+
+    if ($bid_num == 0.0 && $ask_num == 0.0) {
+        $del_sql = "DELETE FROM vk_rate $where_clause;";
+        try {
+            $rslt = $db->execute_query($del_sql, $cond_param);
+        } catch (\mysqli_sql_exception $e) {
+            $ok &= false;
         }
+    } else {
+        $tm = (isset($rate->tm) && !empty($rate->tm)) 
+            ? $rate->tm 
+            : date('Y-m-d H:i:s');
 
-        // Безпечний час
-        $tm = date('Y-m-d H:i:s');
-        if (isset($rate->tm) && !empty($rate->tm)) {
-            $tm = $db->real_escape_string($rate->tm);
-        }
-
-        $s_bid = $db->real_escape_string($bid_val);
-        $s_ask = $db->real_escape_string($ask_val);
-        $s_qty = $db->real_escape_string(!empty($rate->qty) ? $rate->qty : "1");
+        $s_bid = sanitize($bid_val);
+        $s_ask = sanitize($ask_val);
+        $s_qty = sanitize(!empty($rate->qty) ? $rate->qty : "1");
 
         // Перевіряємо наявність старого курсу для збереження історії у "lastbid/lastask"
-        $selsql = "SELECT bid, bidtm, ask, asktm FROM vk_rate $whereclause;";
-        $rslt = $db->query($selsql);
-        
-        $updsqllast = "";
-        $newrate = true;
+        $sel_sql = "SELECT bid, bidtm, ask, asktm, shop FROM vk_rate $where_clause;";
+        $rslt = $db->execute_query($sel_sql, $cond_param);
+        $rslt_map = [];
 
-        if ($rslt && $row = $rslt->fetch_assoc()) {
-            $newrate = false;
-            
-            if ($s_bid !== $row['bid']) {
-                $updsqllast .= "lastbid='" . $db->real_escape_string($row['bid']) . "', lastbidtm='" . $db->real_escape_string($row['bidtm']) . "'";
-            }
-            if ($s_ask !== $row['ask']) {
-                $updsqllast .= ($updsqllast !== '' ? ", " : "") . "lastask='" . $db->real_escape_string($row['ask']) . "', lastasktm='" . $db->real_escape_string($row['asktm']) . "'";
-            }
-            
-            if ($updsqllast !== "") {
-                $db->query("UPDATE vk_rate SET $updsqllast $whereclause;"); 
+        while ($row = $rslt->fetch_assoc()) {
+            $rslt_map[$row['shop']] = $row;
+        }
+
+        foreach ($shops as $shop) {
+            if (!$ok) { break; }
+            if (isset($rslt_map[$shop])){    // update
+                $upd_cond_str = "atclcode = ? AND scode = ? AND pricecode = ? AND shop = ?";
+                $upd_cond_param = [$s_atclcode, $s_scode, $s_pricecode, $shop];
+                $upd_sttm = [];
+                $upd_param = [];
+                if ($bid_num != (double)$rslt_map[$shop]['bid']) {
+                    $upd_sttm[] = "bid= ? ";
+                    $upd_param[] = $s_bid ;
+                    $upd_sttm[] = "bidtm= ? ";
+                    $upd_param[] = $tm;
+                    $upd_sttm[] = "lastbid= ? ";
+                    $upd_param[] = $rslt_map[$shop]['bid'] ;
+                    $upd_sttm[] = "lastbidtm= ? ";
+                    $upd_param[] = $db->real_escape_string($rslt_map[$shop]['bidtm']);
+                    // $updsqllast .= "lastbid='" . $db->real_escape_string($row['bid']) . "', lastbidtm='" . $db->real_escape_string($row['bidtm']) . "'";
+                }
+                if ($s_ask != (double)$rslt_map[$shop]['ask']) {
+                    $upd_sttm[] = "ask= ? ";
+                    $upd_param[] = $s_ask ;
+                    $upd_sttm[] = "asktm= ? ";
+                    $upd_param[] = $tm;
+                    $upd_sttm[] = "lastask= ? ";
+                    $upd_param[] = $rslt_map[$shop]['ask'] ;
+                    $upd_sttm[] = "lastasktm= ? ";
+                    $upd_param[] = $db->real_escape_string($rslt_map[$shop]['asktm']);
+                //    $updsqllast .= ($updsqllast !== '' ? ", " : "") . "lastask='" . $db->real_escape_string($row['ask']) . "', lastasktm='" . $db->real_escape_string($row['asktm']) . "'";
+                }
+                if (count($upd_param) > 0) {
+                    $upd_param = array_merge($upd_param, $upd_cond_param);
+                    $upd_sql = "UPDATE vk_rate SET ".implode(', ', $upd_sttm)." WHERE $upd_cond_str;";
+    //  $respnote .= "upd:$upd_sql \n";
+                    try {
+                        $rslt = $db->execute_query($upd_sql, $upd_param);
+                    } catch (\mysqli_sql_exception $e) {
+                        $ok &= false;
+                    }
+                }
+
+            } else {                        // insert
+                $ins_param = [$shop, $s_atclcod, $s_scode, $s_pricecode, $s_qty, $s_bid, $s_ask, $tm, $tm ];
+                $ins_sql = "INSERT INTO vk_rate 
+                            (shop, atclcode, scode, pricecode, qty, bid, ask, bidtm, asktm) 
+                            VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ? );";
+    //  $respnote .= "ins:$ins_sql";
+               try {
+                    $ins_rslt = $db->execute_query($ins_sql, $ins_param);
+                } catch (\mysqli_sql_exception $e) {
+                    $ok &= false;
+                }
             }
         }
 
-        // Формуємо фінальний запит запису
-        if ($newrate) {
-            $updsql = "INSERT INTO vk_rate (shop, atclcode, scode, pricecode, qty, bid, ask, bidtm, asktm) VALUES "
-                    . "('$s_shop', '$s_atclcode', '$s_scode', '$s_pricecode', '$s_qty', '$s_bid', '$s_ask', '$tm', '$tm');";
-        } else {
-            $updsql = "UPDATE vk_rate SET bid='$s_bid', bidtm='$tm', ask='$s_ask', asktm='$tm' $whereclause;";
-        }
-
-        if (!$db->query($updsql)) {
-            $ok = false;
-            $respnote .= " [SQL Error on $s_atclcode: " . $db->error . "] ";
-        }
     }
 
     if ($ok) {
@@ -681,13 +749,12 @@ function getBearerToken() {
             return $matches[1];
         }
     }
-    return "";
-   
+    return "";  
     // return null;
 }
 
 function validateAndGetPayload() {
-    // 1. Отримуємо заголовок Authorization
+    // Отримуємо заголовок Authorization
     // $headers = getallheaders();
     // $authHeader = $headers['Authorization'] ?? $headers['authorization'] ?? '';
     
@@ -710,7 +777,7 @@ function validateAndGetPayload() {
 
     list($header, $payload, $signature) = $parts;
 
-    // 2. ВАЖЛИВО: Перевіряємо підпис за допомогою безпечного декодування (параметр true для бінарного HMAC)
+    // Перевіряємо підпис за допомогою безпечного декодування (параметр true для бінарного HMAC)
     $key = $_ENV["SHA256_KEY"] ?? getenv('SHA256_KEY') ?? 'default_secret_key';
     $validSignature = rtrim(strtr(base64_encode(hash_hmac('sha256', "$header.$payload", $key, true)), '+/', '-_'), '=');
 
@@ -722,16 +789,8 @@ function validateAndGetPayload() {
     }
 
     return array('status'=>0, 'str' => '', 'note'=>'', 'rslt'=>[]);
-    // 3. Повертаємо розпарсений об'єкт Payload для використання в SQL (права, термінал)
+    // Повертаємо розпарсений об'єкт Payload для використання в SQL (права, термінал)
     return json_decode(base64url_decode($payload));
-
-
-    // if ($ok) {
-    //     return array('status'=>0, 'str' => '', 'note'=>'', 'rslt'=>$rslt);
-    // } else {
-    //     header($_SERVER['SERVER_PROTOCOL'] . ' 401 Unauthorized');
-    //     return array('status'=>2, 'str' => '401 Unauthorized', 'note'=>json_decode($payload), 'rslt'=>$rslt);
-    // }
 
 }
 ?>

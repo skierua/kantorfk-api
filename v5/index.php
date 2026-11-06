@@ -20,6 +20,7 @@ switch ($_SERVER['REQUEST_METHOD']) {
         $requestData =  $_POST;
         break;
     case 'GET':
+    case 'DELETE':
         $requestData = $_GET;
         break;
     default:
@@ -69,6 +70,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $endpoints_post["404"](array("endpointName" => $endpointName));
     }    
 } 
+else if ($_SERVER['REQUEST_METHOD'] === 'DELETE') {
+    list($realEndpoint) = explode('/', $endpointName);
+    if (isset($endpoints_delete[$realEndpoint])) {
+            $payload = validateAndGetPayload();
+            $endpoints_delete[$realEndpoint]($endpointName);
+    } else {
+        $endpoints_delete["404"](array("endpointName" => $endpointName));
+    } 
+}
 // Обробка GET запитів
 else if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     if (isset($endpoints_get[$endpointName])) {
